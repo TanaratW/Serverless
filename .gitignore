@@ -1,0 +1,16 @@
+# Ignore common files and folders
+node_modules/
+dist/
+build/
+.env
+.DS_Store
+
+# Do not ignore jenkins_home
+jenkins_home
+
+# Other common ignores
+*.log
+*.tmp
+*.swp
+.idea/
+.vscode/

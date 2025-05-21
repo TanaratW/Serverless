@@ -1,0 +1,7 @@
+flask
+prometheus_client
+flask-cors
+flask_sqlalchemy
+psycopg2-binary
+requests
+python-dotenv

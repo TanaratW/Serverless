@@ -1,0 +1,207 @@
+version: "3.8"
+services:
+  frontend:
+    container_name: frontend
+    build: ./frontend
+    expose:
+      - "5173"
+    networks:
+      - network_app
+    depends_on:
+      - lists-service
+      - priority-service
+      - user-service
+      - backend
+  backend:
+    build: ./backend
+    container_name: backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    networks:
+      - network_app
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  lists-service:
+    container_name: lists-service
+    build: ./lists-service
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - ./lists-service:/app
+      - ./backend:/app/backend
+    networks:
+      - network_app
+    restart: unless-stopped
+
+  priority-service:
+    container_name: priority-service
+    build: ./priority-service
+    ports:
+      - "5002:5002"
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - network_app
+    restart: unless-stopped
+
+  user-service:
+    container_name: user-service
+    build: ./user-service
+    ports:
+      - "5003:5003"
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - network_app
+    restart: unless-stopped
+
+  db:
+    container_name: db
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - network_app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"] # ใช้ variable แทน hardcode
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./reverse-proxy/nginx.conf:/etc/nginx/nginx.conf # ✅ แก้ path ตรงนี้
+      - ./frontend/dist:/usr/share/nginx/html
+    depends_on:
+      - frontend
+      - backend
+      - lists-service
+      - priority-service
+    networks:
+      - network_app
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.11-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # Manage UI
+      - "15692:15692" # Prometheus metrics
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    command: >
+      bash -c "rabbitmq-plugins enable --offline rabbitmq_prometheus &&
+               rabbitmq-server"
+    networks:
+      - network_app
+    restart: unless-stopped
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - network_app
+    restart: unless-stopped
+    #environment:
+    # - GF_SECURITY_ADMIN_PASSWORD=admin
+    #- GF_SERVER_SERVE_FROM_SUB_PATH=true
+    #    - GF_SERVER_ROOT_URL=http://localhost/grafana/
+    volumes:
+      - ./prometheus/grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - network_app
+    depends_on:
+      - backend
+      - rabbitmq
+      - lists-service
+      - priority-service
+    restart: unless-stopped
+
+  docker-socket-proxy:
+    container_name: docker-socket-proxy
+    image: tecnativa/docker-socket-proxy:latest
+    ports:
+      - "2375:2375"
+    environment:
+      - CONTAINERS=1 # อนุญาตให้ proxy เข้าถึงข้อมูล container (docker ps, inspect, logs, etc.)
+      - IMAGES=1 # อนุญาตให้ดึง/ลบ/จัดการ image ได้ (docker images, pull, build)
+      - NETWORKS=1 # อนุญาตให้จัดการ network ได้ (docker network ls/create)
+      - VOLUMES=1 # อนุญาตให้จัดการ volume ได้ (docker volume ls/create/rm)
+      - SERVICES=1 # สำหรับ Swarm Mode (docker service ls) → สามารถเปิดทิ้งไว้ได้ไม่มีผลใน standalone
+      - TASKS=1 # สำหรับ Swarm Mode → เช่น inspect task ของ service
+      - NODES=1 # สำหรับ Swarm Mode → เช่น docker node ls
+      - INFO=1 # อนุญาตให้รันคำสั่ง docker info ได้
+      - SYSTEM=1 # อนุญาตให้รัน docker system commands เช่น system prune
+      - POST=1 # สามารถส่ง POST ได้
+      - DELETE=1 # สามารถส่ง DELETE ได้
+      - BUILD=1 # สำคัญสำหรับ buildkit
+      - PLUGINS=1 # ใช้ตอนเรียก build บางแบบ
+      - AUTH=1 # ใช้ตอน build image แบบ login
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - network_app
+    restart: unless-stopped
+
+  jenkins:
+    container_name: jenkins
+    build: ./
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - ./jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.env:/var/jenkins_home/.env
+    networks:
+      - network_app
+    environment:
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+    restart: unless-stopped
+
+networks:
+  network_app:
+
+volumes:
+  db_data:
+  jenkins_home:
+  grafana_data:
